@@ -82,6 +82,35 @@ export function barsPerRow(pageWidthPx: number, beatsPerBar: number, pxPerTick: 
   return Math.max(1, Math.floor((pageWidthPx - 40) / (barW + barGap)));
 }
 
+/**
+ * 打印行布局：按纸张「谱面区」可用宽度自动计算每行小节数与每格像素宽。
+ * 小节窄（如 2/4）就多放、小节宽（如 4/4）就少放；短谱小节数不足一行时，
+ * 放大 pxPerTick 尽量铺满，避免右侧大片留白。pxPerTick 限制在 [6,14]，
+ * 与编辑页观感一致（编辑页固定 14）。
+ *
+ * 两条容量上限取小：
+ * - 宽度容量：最小字号 6px/格 时可用宽度能放下的小节数；
+ * - 时值容量：每行总时值恒定（16 个 2/4 小节 = 128 格，4/4 自然折半为 8）。
+ */
+export function printLayout(
+  usableWidthPx: number,
+  beatsPerBar: number,
+  barCount: number,
+  barGap = 10,
+  maxBarsPerRow = 16,
+  maxTicksPerRow = 128,
+): { barsPerRow: number; pxPerTick: number } {
+  if (barCount <= 0 || usableWidthPx <= 0) return { barsPerRow: 1, pxPerTick: 8 };
+  const ticks = barTicks(beatsPerBar);
+  const widthCapacity = Math.floor((usableWidthPx + barGap) / (ticks * 6 + barGap));
+  const tickCapacity = Math.floor(maxTicksPerRow / ticks); // 2/4→16、3/4→10、4/4→8
+  // 再受总小节数约束：短谱不补空行
+  const n = Math.max(1, Math.min(maxBarsPerRow, barCount, widthCapacity, tickCapacity));
+  // n 个小节 + (n-1) 个间隙恰好铺满可用宽度所需的每格宽度
+  const px = Math.floor((usableWidthPx - (n - 1) * barGap) / (n * ticks));
+  return { barsPerRow: n, pxPerTick: Math.max(6, Math.min(14, px)) };
+}
+
 /** 全曲拍总数（散板时为相对格数） */
 export function totalTicks(bars: Bar[]): number {
   return bars.reduce((s, b) => s + barTicks(b.beatsPerBar), 0);

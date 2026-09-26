@@ -191,6 +191,115 @@ test.describe('打印', () => {
     await page.getByTestId('btn-do-print').click();
     expect(await page.evaluate(() => (window as unknown as { __printed?: boolean }).__printed)).toBe(true);
   });
+
+  test('打印排版：2/4 长谱按纸张可用宽度每行 16 小节（不再固定 4 个）', async ({ page }) => {
+    await page.goto('#/library');
+    await page.getByTestId('load-jijifeng').click();
+    await expect(page.getByTestId('editor-page')).toBeVisible();
+    for (let i = 0; i < 4; i++) await page.getByRole('button', { name: '+4 小节' }).click(); // 4→20 小节
+    await page.waitForTimeout(800); // 等自动保存落盘（防抖 400ms）
+    await page.getByTestId('btn-print').click();
+    await expect(page.getByTestId('print-page')).toBeVisible();
+    await expect(page.getByTestId('print-bars-per-row')).toContainText('每行 16 小节');
+    // 20 个小节排成两行（16 + 4），整行不超出 A4 内容宽
+    const rows = await page.evaluate(() => {
+      const ys = new Set<number>();
+      document.querySelectorAll('[data-testid^="print-bar-"]').forEach((g) => {
+        const t = g.querySelector('text');
+        if (t) ys.add(Math.round(t.getBoundingClientRect().y));
+      });
+      return ys.size;
+    });
+    expect(rows).toBe(2);
+    const w = await page.evaluate(() => (document.querySelector('[data-testid="print"]') as SVGSVGElement).width.baseVal.value);
+    expect(w).toBeLessThanOrEqual(1047 + 64 + 2);
+  });
+
+  test('打印副行：散板只标「散板」，不标拍号与固定速度', async ({ page }) => {
+    await createEmptyScore(page, 'E2E 散板打印');
+    await page.getByTestId('chk-freemeter').check();
+    await page.waitForTimeout(800); // 等自动保存落盘
+    await page.getByTestId('btn-print').click();
+    await expect(page.getByTestId('print-page')).toBeVisible();
+    const sub = page.getByTestId('print-sub');
+    await expect(sub).toHaveText('散板');
+    await expect(sub).not.toContainText('4/4');
+    await expect(sub).not.toContainText('BPM');
+  });
+
+  test('导出 PNG：两倍分辨率、白底、连点不重复导出', async ({ page }) => {
+    await page.goto('#/library');
+    await page.getByTestId('load-jijifeng').click();
+    await expect(page.getByTestId('editor-page')).toBeVisible();
+    await page.getByTestId('btn-print').click();
+    await expect(page.getByTestId('print-page')).toBeVisible();
+
+    // 桩住 toBlob 不回调（模拟编码进行中），录制 canvas 调用
+    await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>;
+      const calls: { toBlob: number; fills: unknown[][]; draws: unknown[][] } = { toBlob: 0, fills: [], draws: [] };
+      w.__pngCalls = calls;
+      const ctxProto = CanvasRenderingContext2D.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+      const origFill = ctxProto.fillRect;
+      ctxProto.fillRect = function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+        calls.fills.push([this.fillStyle, ...args]);
+        return origFill.apply(this, args);
+      };
+      const origDraw = ctxProto.drawImage;
+      ctxProto.drawImage = function (...args: unknown[]) {
+        calls.draws.push(args);
+        return origDraw.apply(this, args);
+      };
+      HTMLCanvasElement.prototype.toBlob = function () {
+        calls.toBlob += 1; // 故意不回调：导出一直处于「进行中」
+      };
+    });
+
+    await page.getByTestId('btn-export-png').click();
+    const btn = page.getByTestId('btn-export-png');
+    await expect(btn).toBeDisabled();
+    await expect(btn).toHaveText('导出中…');
+
+    // 连点：按钮已禁用，再用 DOM click 强发一次也必须被重入保护挡住
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-testid="btn-export-png"]')!.click());
+
+    const info = await page.evaluate(() => {
+      const svg = document.querySelector<SVGSVGElement>('.score-svg')!;
+      const calls = (window as unknown as { __pngCalls: { toBlob: number; fills: unknown[][]; draws: unknown[][] } }).__pngCalls;
+      return {
+        svgW: svg.width.baseVal.value,
+        svgH: svg.height.baseVal.value,
+        toBlob: calls.toBlob,
+        bgFill: calls.fills[0],
+        draw: calls.draws[0] as unknown as [unknown, number, number, number, number],
+      };
+    });
+    expect(info.toBlob).toBe(1); // 连点只导出一次
+    expect(info.bgFill[0]).toBe('#ffffff'); // 白底
+    expect(info.bgFill[1]).toBe(0); // fillRect x
+    expect(info.bgFill[2]).toBe(0); // fillRect y
+    // 画布为 SVG CSS 尺寸 + 留白后的 2 倍
+    expect(info.bgFill[3]).toBe((info.svgW + 32) * 2);
+    expect(info.bgFill[4]).toBe((info.svgH + 32) * 2);
+    // drawImage：偏移 = 留白×2，宽高 = SVG CSS 尺寸×2
+    expect(info.draw[1]).toBe(32);
+    expect(info.draw[2]).toBe(32);
+    expect(info.draw[3]).toBe(info.svgW * 2);
+    expect(info.draw[4]).toBe(info.svgH * 2);
+  });
+
+  test('导出 PNG：完整流程下载到 .png 文件', async ({ page }) => {
+    await page.goto('#/library');
+    await page.getByTestId('load-jijifeng').click();
+    await expect(page.getByTestId('editor-page')).toBeVisible();
+    await page.getByTestId('btn-print').click();
+    await expect(page.getByTestId('print-page')).toBeVisible();
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByTestId('btn-export-png').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.png$/);
+    await expect(page.getByTestId('btn-export-png')).toHaveText('导出 PNG'); // 完成后恢复
+  });
 });
 
 test.describe('设置', () => {

@@ -8,6 +8,7 @@ import {
   barsPerRow,
   durationLine,
   isBarFull,
+  printLayout,
   scoreWidthPx,
   setStepAt,
   stepAtOffset,
@@ -113,6 +114,39 @@ describe('T21-T24 宽度与打印一致', () => {
     expect(d6 - d4).toBe(20);
   });
   it('T24 空小节铺满（emptyBar 生成）', () => expect(isBarFull(emptyBar(0, 4))).toBe(true));
+
+  const USABLE = 1047 - 64; // A4 横向内容宽 - 行标宽，与 Print 页一致
+
+  it('T24a 2/4 长谱按可用宽度每行 16 小节（不再固定 4 小节）', () => {
+    const l = printLayout(USABLE, 2, 64);
+    expect(l.barsPerRow).toBe(16);
+  });
+
+  it('T24b 每行小节数随拍号变：4/4 窄、2/4 宽（按可用宽度算，与谱长无关）', () => {
+    const two = printLayout(USABLE, 2, 64);
+    const four = printLayout(USABLE, 4, 64);
+    expect(two.barsPerRow).toBeGreaterThan(four.barsPerRow);
+    expect(four.barsPerRow).toBe(8);
+  });
+
+  it('T24c 短谱小节数不足一行时不补空：每行上限 = 总小节数', () => {
+    const l = printLayout(USABLE, 2, 4); // 急急风：4 小节
+    expect(l.barsPerRow).toBe(4);
+    expect(l.pxPerTick).toBe(14); // 放大字号尽量铺满
+  });
+
+  it('T24d 算出的宽度不超过可用宽度（长谱不溢出到第二页方向）', () => {
+    for (const bpb of [2, 3, 4]) {
+      const l = printLayout(USABLE, bpb, 50);
+      const used = l.barsPerRow * barTicks(bpb) * l.pxPerTick + (l.barsPerRow - 1) * 10;
+      expect(used, `${bpb}/4 行宽`).toBeLessThanOrEqual(USABLE);
+    }
+  });
+
+  it('T24e 散板（默认 4 拍）布局与 4/4 一致，短谱同样不补空', () => {
+    const l = printLayout(USABLE, 4, 3);
+    expect(l.barsPerRow).toBe(3);
+  });
 });
 
 describe('T25-T26 曲牌骨架换算', () => {
